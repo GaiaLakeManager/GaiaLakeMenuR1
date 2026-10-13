@@ -1,0 +1,346 @@
+/* Gaia Lake Menu — guest ordering (v3.0.17). Loaded by index.html after the menu script. */
+let ORDERING = false;
+const menuData = () => window.MENU || {};   // index.html stores the loaded menu in window.MENU
+const OS = { cart:new Map(), amend:null, lastId:null, id:null, f:{}, text:'' };
+const $ = id => document.getElementById(id);
+const today = () => new Date().toLocaleDateString('en-CA', { timeZone:'Asia/Colombo' });
+const nowHM = () => new Date().toLocaleTimeString('en-GB', { timeZone:'Asia/Colombo', hour:'2-digit', minute:'2-digit', hour12:false });
+function tomorrow(){ const d = new Date(today() + 'T00:00:00Z'); d.setUTCDate(d.getUTCDate() + 1); return d.toISOString().slice(0, 10); }
+function hours(){ const s = (menuData().settings || {}); return { open:s.kitchenOpen || '06:00', close:s.kitchenClose || '22:00', cutoff:s.sameDayCutoff || '19:00', last:s.lastDining || '21:00' }; }
+const pastCutoff = () => nowHM() >= hours().cutoff;
+const minDate = () => { const b = pastCutoff() ? tomorrow() : today(); return GUEST && GUEST.checkin > b ? GUEST.checkin : b; };   // login mode: not before check-in          // earliest dining date a guest may still pick
+const maxDate = () => GUEST ? GUEST.checkout : '';   // login mode: up to check-out
+function kitchenOpenNow(){ const h = hours(), n = nowHM(); return h.open <= h.close ? (n >= h.open && n < h.close) : (n >= h.open || n < h.close); }
+const dishBy = c => (menuData().dishes || []).find(d => Number(d.code) === Number(c));
+const catOf = c => (menuData().categories || []).find(x => x.id === dishBy(c)?.categoryId);
+const gPlan = () => GUEST ? ({ RO:[], BB:['B'], HB:['B','D'], FB:['B','L','D'] }[GUEST.basis] || []) : [];   // meals included in the guest's booking basis
+const planNote = () => GUEST ? ({ BB:'On Bed & Breakfast — breakfast included', HB:'On Half Board — breakfast and dinner included', FB:'On Full Board — breakfast, lunch and dinner included' }[GUEST.basis] || '') : (OS.f.bb ? 'On Bed & Breakfast — breakfast included' : '');   // '' for Room Only
+const planCat = k => !!k && !!GUEST && gPlan().includes(glCatMeal(k));          // category included in the plan (login mode)
+const isBB = c => GUEST ? planCat(catOf(c)) : !!catOf(c)?.bbIncluded;
+const cartHasBB = () => lines().some(l => isBB(l.c));
+const code3 = c => '#' + String(c).padStart(3, '0');
+const usd = n => 'USD ' + Number(n).toFixed(2);   // all order prices are in USD; LKR conversion happens at final billing
+const lines = () => [...OS.cart.values()];
+function unit(c, s){ const d = dishBy(c); if (!d) return 0; const o = s && (d.subOptions || []).find(x => x.name === s); return Number((o ? o.price : d.price)?.usd) || 0; }
+function lineCharge(l){ return (OS.f.bb && isBB(l.c)) ? 0 : unit(l.c, l.s) * l.q; }         // 0 when waived on Bed & Breakfast
+const total = () => Math.round(lines().reduce((t, l) => t + lineCharge(l), 0) * 100) / 100;
+function addBtn(c, s){ return ORDERING && c && unit(c, s) > 0 ? `<button class="add-btn" data-c="${c}" data-s="${esc(s)}">+ Add</button>` : ''; }
+const totalTxt = () => usd(total());
+function syncBtns(){ document.querySelectorAll('.add-btn').forEach(b => { const l = OS.cart.get(b.dataset.c + '|' + b.dataset.s); b.textContent = l ? '✓ Added (' + l.q + ')' : '+ Add'; b.classList.toggle('on', !!l); }); }
+function bar(){
+  const n = lines().reduce((t, l) => t + l.q, 0);
+  $('cartBar').classList.toggle('hidden', !n);
+  $('cartSummary').textContent = `${n} item${n > 1 ? 's' : ''} · ${usd(total())}`; syncBtns(); saveCart();
+}
+function initOrdering(){
+  bar();
+  if (GUEST && GUEST.viewOnly) return;                                     // v3.0.12: another device already orders for this group — browse only
+  if (GUEST){ Object.assign(OS.f, { name:GUEST.name, phone:GUEST.phone, room:GUEST.group ? (GUEST.groupLabel || 'Group') : (GUEST.room || ''), bb:gPlan().length > 0 }); }   // login mode: details come from the verified booking
+  else try{ Object.assign(OS.f, JSON.parse(localStorage.getItem('gl-guest-details') || '{}')); }catch(e){}
+  restoreCart(); bar();                                                   // v3.0.7: bring back the cart if the page was reloaded
+}
+document.addEventListener('click', e => {
+  const b = e.target.closest('.add-btn'); if (!b) return;
+  const k = b.dataset.c + '|' + b.dataset.s, l = OS.cart.get(k) || { c:b.dataset.c, s:b.dataset.s, q:0, d:'', m:'', t:'' };
+  l.q = Math.min(50, l.q + 1); OS.cart.set(k, l); bar();
+});
+$('openCart').onclick = () => {
+  if (GUEST){ const s = glSaved(); if (s) glCall('check', s).then(r => {                                                      // quiet re-check runs in the background
+    if (!r.ok && !r.network){ glClear(); alert(r.error || 'Please log in again.'); location.reload(); } else if (r.ok){ GUEST = r.guest; if (GUEST.viewOnly){ alert('Group orders are submitted through one primary device. Feel free to browse here and pass your choices to your group leader.'); location.reload(); } } }); }
+  showForm(); $('orderModal').classList.add('open'); document.body.classList.add('o-lock'); $('orderModal').scrollTop = 0; };
+const closeO = () => { $('orderModal').classList.remove('open'); document.body.classList.remove('o-lock'); };
+
+function roomOptions(){                                              // Room Numbers + Group/bulk-order labels, merged — dropdown only, no typing
+  const s = menuData().settings || {};
+  return [...(s.rooms || []), ...(s.groupLabels || [])];
+}
+function isGroupRoom(v){ if (GUEST) return !!GUEST.group; return (menuData().settings || {}).groupLabels?.some(g => g.toLowerCase() === (v || '').trim().toLowerCase()); }
+
+const SET = () => menuData().settings || {};
+const unitLbl = () => (SET().unitLabel || '').trim() || 'Room';        // what the stay field is called (Room / Villa / Cottage …) — set by admin
+const phoneTxt = () => { const p = (menuData().profile || {}).phone; return p ? ' on ' + p : ''; };
+const askWhen = () => true;                                          // guests are always asked for a date
+const perItem = () => SET().perItemWhen !== false;                   // ONE admin switch: a date for each item (on) or one date for the whole order (off)
+const fixedMeal = c => { const k = catOf(c); return k ? glCatMeal(k) : ''; };   // category fixed to B / L / D, or '' = guest chooses
+const MEALS = { B:'Breakfast', L:'Lunch', D:'Dinner' };
+const mealTime = m => ({ B:SET().breakfastTime || '07:30', L:SET().lunchTime || '12:30', D:SET().dinnerTime || '19:30' })[m] || '';
+const fmtDate = v => v ? new Date(v + 'T00:00:00Z').toLocaleDateString('en-GB', { weekday:'short', day:'2-digit', month:'short', year:'numeric', timeZone:'UTC' }) : '';
+const fmtOf = (t, v, e) => (t === 'date' ? fmtDate(v) : (v ? to12h(v) : '')) || e || (t === 'date' ? 'Tap to choose a date' : 'Tap to choose a time');
+function when(l){                                                    // effective date / meal / time of one cart line
+  if (!askWhen()) return { d:'', m:'', t:'' };
+  const own = perItem(), f = OS.f, d = (own ? l.d : f.date) || minDate(), fm = fixedMeal(l.c);
+  if (fm) return { d, m:fm, t:mealTime(fm) };                        // fixed-meal category: always served at that meal
+  const m = (own ? l.m : f.meal) || '';
+  return { d, m, t: m === 'T' ? ((own ? l.t : f.time) || '') : mealTime(m) };
+}
+const whenTxt = w => w && w.d ? [fmtDate(w.d), MEALS[w.m] ? 'For ' + MEALS[w.m] : '', w.m === 'T' && w.t ? 'At ' + to12h(w.t) : ''].filter(Boolean).join(' · ') : '';   // meal name only for B/L/D; a clock time only for Specific time
+
+function grab(){
+  if (!$('fName')) return;
+  const g = id => $(id) ? $(id).value : undefined;
+  OS.f = { ...OS.f, date:g('fDate') ?? OS.f.date, meal:g('fMeal') ?? OS.f.meal, time:g('fTime') ?? OS.f.time, name:$('fName').value, room:$('fRoom') ? $('fRoom').value : (OS.f.room || ''), phone:$('fPhone').value, note:$('fNote').value, web:$('fWeb').value, bb:$('fBB') ? $('fBB').checked : (OS.f.bb || false) };
+  try{ localStorage.setItem('gl-guest-details', JSON.stringify({ name:OS.f.name, room:OS.f.room, phone:OS.f.phone })); }catch(e){}
+}
+function notices(){
+  const h = hours(); let n = '';
+  if (GUEST && GUEST.group) n += `<div class="o-note">Displaying your ordering for the whole group — group selection policy applies.</div>`;
+  if (askWhen() && pastCutoff() && !(GUEST && GUEST.checkin > today())) n += `<div class="o-note">Same-day orders are closed for today (after ${to12h(h.cutoff)}). Please choose tomorrow or a later date.</div>`;
+  if (!kitchenOpenNow()) n += `<div class="o-note">The kitchen is closed right now. Your order will still be sent and seen when we open at ${to12h(h.open)}.</div>`;
+  return n;
+}
+function itemWhen(l){                                                // per-item date (and meal) — shown only when the admin per-item switch is on
+  if (!askWhen() || !perItem()) return '';
+  const w = when(l), h = hours(), grp = isGroupRoom(OS.f.room);
+  const dIn = `<div class="ol-when-lbl">Please select date</div><div class="dt-row"><input type="date" class="od" min="${minDateFor(l.c)}" max="${maxDate()}" value="${w.d}"><small class="fmt">${fmtOf('date', w.d)}</small></div>`;
+  if (fixedMeal(l.c)) return `<div class="ol-when">${dIn}</div>`;
+  const sel = `<div class="ol-when-lbl">${l.m === 'T' ? 'Serve at' : 'Serve for'}</div><select class="om">${l.m ? '' : '<option value="">Select…</option>'}${['B','L','D'].map(m => `<option value="${m}"${l.m === m ? ' selected' : ''}>${MEALS[m]}</option>`).join('')}<option value="T"${l.m === 'T' ? ' selected' : ''}>Specific time</option></select>`;
+  const tIn = l.m === 'T' ? `<div class="dt-row"><input type="time" class="ot" min="${h.open}" max="${h.last}" value="${l.t || ''}"><small class="fmt">${fmtOf('time', l.t)}</small></div><div class="hint">Between ${to12h(h.open)} and ${to12h(h.last)}.</div>` : '';
+  return `<div class="ol-when">${dIn}${sel}${tIn}</div>`;
+}
+function whenBlock(){                                                // order-level date + meal (hidden when each item has its own date)
+  if (!askWhen()) return '';
+  const f = OS.f, h = hours(), ls = lines(), fx = ls.filter(l => fixedMeal(l.c)), allFx = ls.length > 0 && fx.length === ls.length, meal = f.meal || '', dv = f.date || minDate();
+  const ms = [...new Set(fx.map(l => fixedMeal(l.c)))], grp = isGroupRoom(f.room);
+  let top = '';
+  if (!perItem()){
+    const dIn = `<label class="dt">Dining date <em class="fh">(day / month / year)</em><input type="date" id="fDate" min="${minDateAll()}" max="${maxDate()}" value="${dv}"><small class="fmt">${fmtOf('date', dv)}</small></label>`;
+    const sel = allFx ? '' : `<label>${meal === 'T' ? 'Serve at' : 'Serve for'}<select id="fMeal">${meal ? '' : '<option value="">Select…</option>'}${['B','L','D'].map(m => `<option value="${m}"${meal === m ? ' selected' : ''}>${MEALS[m]}</option>`).join('')}<option value="T"${meal === 'T' ? ' selected' : ''}>Specific time</option></select></label>`;
+    const tIn = !allFx && meal === 'T' ? `<label class="dt">Time <em class="fh">(hour : minute)</em><input type="time" id="fTime" min="${h.open}" max="${h.last}" value="${f.time || ''}"><small class="fmt">${fmtOf('time', f.time)}</small></label><div class="hint">A specific time must be between ${to12h(h.open)} and ${to12h(h.last)}.</div>` : '';
+    const note = allFx ? `<div class="o-bf">🍽️ ${ms.length === 1 ? `For ${MEALS[ms[0]]}.` : 'Each item is served at its own meal (' + ms.map(m => MEALS[m]).join(', ') + ').'} Just choose the date.</div>` : '';
+    top = note + `<div class="o-grid">${dIn}${sel}</div>${tIn}` +
+      (fx.length && !allFx ? `<div class="hint">Breakfast, Lunch and Dinner menu items are always served at their own meal, on the date above.</div>` : '');
+  }
+  return top + `<div class="hint">Need a special time (for example a late lunch on arrival or an early breakfast on check-out)? Please write it in the Note below and our staff will confirm with you.</div>`;
+}
+function showForm(err){
+  const f = OS.f, opts = roomOptions();
+  const roomIn = opts.length
+    ? `<select id="fRoom">${!f.room ? `<option value="">Select ${esc(unitLbl().toLowerCase())}…</option>` : ''}${opts.map(r => `<option${r === f.room ? ' selected' : ''}>${esc(r)}</option>`).join('')}</select>`
+    : `<div class="hint">Nothing to choose from is set up yet — please contact us directly to order.</div>`;
+  $('orderTitle').textContent = OS.amend ? 'Amend your order' : 'Your order';
+  $('orderBody').innerHTML = notices() +
+    ([...OS.cart.entries()].map(([k, l]) => `<div class="ol" data-k="${esc(k)}">
+      <div class="ol-top"><div class="ol-name"><b><span class="item-no">${code3(l.c)}</span> ${esc(dishBy(l.c)?.name || '')}</b>${l.s ? `<small>${esc(l.s)}</small>` : ''}</div>${olThumb(l.c)}</div>
+      <div class="ol-ctl"><button class="q" data-d="-1">−</button><span>${l.q}</span><button class="q" data-d="1">+</button>${askWhen() && fixedMeal(l.c) ? `<span class="for-tag">For ${MEALS[fixedMeal(l.c)]}</span>` : ''}<span class="ol-p">${(OS.f.bb && isBB(l.c)) ? 'Included (' + (GUEST ? GUEST.basis : 'BB') + ')' : usd(unit(l.c, l.s) * l.q)}</span><button class="q rm" data-rm="1">×</button></div>
+      ${itemWhen(l)}</div>`).join('') || '<p>Your order is empty.</p>') +
+    (!GUEST && cartHasBB() ? `<label class="bb-box${f.bb ? ' on' : ''}" style="display:flex;flex-wrap:nowrap;align-items:center;gap:10px;margin:8px 0 4px;cursor:pointer;opacity:${f.bb ? 1 : .55};"><input type="checkbox" id="fBB" ${f.bb ? 'checked' : ''} style="display:inline-block;width:20px;height:20px;min-height:0;margin:0;padding:0;flex:0 0 20px;"><span style="flex:1 1 auto;min-width:0;font-size:.82rem;line-height:1.35;">On Bed &amp; Breakfast — this breakfast is included in my room rate.</span></label>${f.bb ? `<div class="hint">If this isn't correct, your order will be billed at the full price.</div>` : ''}` : '') +
+    `<div class="o-total"><span>Total</span><b>${totalTxt()}</b></div>` + whenBlock() +
+    (err ? `<div class="o-err" id="oErr">${esc(err)}</div>` : '') + `<label>Your name<input id="fName" autocomplete="name"${GUEST ? ' readonly' : ''} value="${esc(f.name || '')}"></label>
+    <div class="o-grid"><label>${esc(GUEST && GUEST.group ? 'Group' : unitLbl())}${GUEST ? `<input id="fRoom" value="${esc(f.room || '')}" readonly>` : roomIn}</label><label>Phone<input id="fPhone" type="tel" autocomplete="tel"${GUEST ? ' readonly' : ''} value="${esc(f.phone || '')}"></label></div>
+    <label>Note (optional)<textarea id="fNote">${esc(f.note || '')}</textarea></label>
+    <input class="hp" id="fWeb" tabindex="-1" autocomplete="off" aria-hidden="true" value="${esc(f.web || '')}">
+    <div class="o-btns"><button class="btn-ghost danger" id="oCancel">Cancel order</button><button class="btn-ghost" id="oClose">Go back</button><button class="btn-main" id="oReview">Review order</button></div>`;
+  if (err){ const e = $('oErr'); if (e) e.scrollIntoView({ block:'center', behavior:'smooth' }); }
+}
+function check(){
+  const f = OS.f, ph = (f.phone || '').replace(/[\s\-()]/g, ''), h = hours();
+  if (!OS.cart.size) return 'Please add at least one item.';
+  if ((f.name || '').trim().length < 2) return 'Please enter your name.';
+  if (!(f.room || '').trim()) return `Please select your ${unitLbl().toLowerCase()}.`;
+  if (!/^\+?\d{7,15}$/.test(ph)) return 'Please enter a valid phone number (digits only; add the country code if outside Sri Lanka).';
+  if (askWhen()) for (const l of lines()){
+    const w = when(l);
+    if (!w.d) return 'Please choose a dining date.';
+    if (w.d < today()) return 'The dining date cannot be in the past.';
+    if (w.d < minDateFor(l.c)) return w.d === today() && slotPassedToday(l.c) ? `Today\u2019s ${MEALS[fixedMeal(l.c)]} time (${to12h(mealTime(fixedMeal(l.c)))}) has passed. Please choose tomorrow or a later date.` : GUEST && GUEST.checkin > today() ? `Please choose a date from your check-in date (${fmtDate(GUEST.checkin)}).` : `Same-day orders are closed for today (after ${to12h(h.cutoff)}). Please choose tomorrow or a later date.`;
+    if (GUEST){
+      if (w.d < GUEST.checkin) return `Please choose a date from your check-in date (${fmtDate(GUEST.checkin)}).`;
+      if (w.d > GUEST.checkout) return `Orders can only be placed up to your check-out date (${fmtDate(GUEST.checkout)}).`;
+    }
+    if (!w.m) return 'Please choose Breakfast, Lunch, Dinner or a specific time.';
+    if (!w.t) return 'Please choose a dining time.';
+    if (w.m === 'T' && (w.t < h.open || w.t > h.last)) return `A specific time must be between ${to12h(h.open)} and ${to12h(h.last)}. For any other time, please write your request in the Note.`;
+    if (w.m === 'T' && w.d === today() && w.t < nowHM()) return 'That time has already passed today. Please choose a later time or another date.';
+  }
+  if (isGroupRoom(f.room)){                                          // group orders: one item per Breakfast/Lunch/Dinner sitting
+    const seen = {};
+    for (const l of lines()){
+      const w = when(l);
+      if (!fixedMeal(l.c)) continue;
+      const k = w.d + '|' + w.m, it = l.c + '|' + (l.s || '');
+      if (seen[k] && seen[k] !== it) return `Group orders can include only one item for each ${MEALS[w.m]} sitting (${fmtDate(w.d)}). To order differently, please call the manager${phoneTxt()}.`;
+      seen[k] = it;
+    }
+  }
+  return '';
+}
+function showReview(){
+  const f = OS.f;
+  $('orderTitle').textContent = 'Review your order';
+  $('orderBody').innerHTML = notices() +
+    `<div class="rv">${lines().map(l => { const wt = whenTxt(when(l)); return `<div class="rv-l"><span>${l.q}× <span class="item-no">${code3(l.c)}</span> ${esc(dishBy(l.c)?.name || '')}${l.s ? ' – ' + esc(l.s) : ''}${wt ? `<small>${esc(wt)}</small>` : ''}</span><b>${(f.bb && isBB(l.c)) ? 'Included (' + (GUEST ? GUEST.basis : 'BB') + ')' : usd(unit(l.c, l.s) * l.q)}</b></div>`; }).join('')}
+    <div class="rv-l tot"><span>Total</span><b>${totalTxt()}</b></div></div>
+    <p class="rv-m"><b>${esc(f.name)}</b> · ${esc(f.room)} · ${esc(f.phone)}${f.note ? '<br>Note: ' + esc(f.note) : ''}${planNote() ? '<br><small>' + esc(planNote()) + '</small>' : ''}</p>
+    <div class="o-btns"><button class="btn-ghost" id="oEdit">Edit</button><button class="btn-main" id="oSend">Confirm &amp; send</button></div>`;
+}
+function payload(){
+  const f = OS.f, ask = askWhen(); OS.id = OS.id || 'GL-' + Array.from({ length:6 }, () => 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'[Math.floor(Math.random() * 32)]).join('');
+  return { v:2, id:OS.id, amend:OS.amend || undefined, name:f.name.trim(), room:f.room.trim(), phone:f.phone.replace(/[\s\-()]/g, ''), date:ask ? (f.date || minDate()) : '', meal:ask ? (f.meal || '') : '', time:ask ? (f.time || '') : '',
+    note:(f.note || '').trim() || undefined, total:total(), planIncluded:!!f.bb, gc:GUEST ? (glSaved() || {}).code : undefined, did:GUEST ? glDevice() : undefined, website:f.web || '',
+    items:lines().map(l => { const w = when(l); return { c:Number(l.c), s:l.s || undefined, q:l.q, d:w.d || undefined, m:w.m || undefined, t:w.t || undefined }; }) };
+}
+function orderText(o){   // human-readable order + one #GLORDER line the admin paste box can read
+  const { website, ...clean } = o;
+  const j = btoa(unescape(encodeURIComponent(JSON.stringify(clean)))), ck = [...j].reduce((h, ch) => (h * 33 + ch.charCodeAt(0)) >>> 0, 5381).toString(36);
+  return `Gaia Lake food order ${o.id}${o.amend ? ' (amends ' + o.amend + ')' : ''}\n${o.name}, ${o.room}, ${o.phone}\n` +
+    o.items.map(i => { const w = whenTxt(i); return `${i.q}x ${code3(i.c)} ${dishBy(i.c)?.name || ''}${i.s ? ' - ' + i.s : ''}${w ? ` (${w})` : ''}`; }).join('\n') +
+    `\nTotal ${usd(o.total)}${o.planIncluded && planNote() ? ' (' + planNote().replace(/^On /, '') + ')' : ''}${o.note ? '\nNote: ' + o.note : ''}\n#GLORDER ${j}.${ck}`;
+}
+const post = async (o, manual) => {                      // manual = do not follow the reply redirect: it resolves as soon as the server has answered
+  const c = new AbortController(), t = setTimeout(() => c.abort(), 12000);
+  try{ return await fetch(CONFIG.ORDER_SCRIPT_URL, { method:'POST', headers:{ 'Content-Type':'text/plain;charset=utf-8' }, body:JSON.stringify(o), signal:c.signal, redirect:manual ? 'manual' : 'follow' }); }
+  finally{ clearTimeout(t); }
+};
+async function send(){
+  const o = payload(), b = $('oSend'); b.disabled = true; b.textContent = 'Sending…';
+  const slow = setTimeout(() => { if (b.isConnected) b.textContent = 'Still sending — please wait…'; }, 6000);
+  const sent = (unconfirmed, demo) => { OS.lastId = o.id; OS.id = null; OS.done = true; clearSavedCart(); showDone(o.id, unconfirmed, demo); };
+  let why = '';
+  try{
+    for (let a = 0; a < 2; a++){                     // read the server's reply (at most twice; safe because the server ignores a repeated order ID)
+      let j = null;
+      try{ const r = await post(o, false); j = await r.json(); }
+      catch(e){ why = e.name === 'AbortError' ? 'no reply received in time' : e.message; console.error('Order send failed:', e); }
+      if (j && j.reject){ showForm(j.error); return; }
+      if (j && j.ok){ sent(false, !!j.demo); return; }
+      if (!j) break;                                 // reply unreadable: go straight to the confirmation step below
+      why = j.error || 'server error';
+      if (a < 1){ b.textContent = 'Retrying…'; await new Promise(r => setTimeout(r, 1500)); }
+    }
+    try{                                             // same order again, without following the reply redirect: any answer means the server received it
+      const r = await post(o, true);
+      if (r.type === 'opaqueredirect' || r.ok){ sent(true); return; }
+    }catch(e){ why = why || e.message; }
+    showFallback(o, why);
+  }finally{ clearTimeout(slow); }
+}
+function showDone(id, unconfirmed, demo){
+  const ph = (menuData().profile || {}).phone || '';
+  $('orderTitle').textContent = demo ? 'Demo order ✓' : 'Order sent ✓';
+  if (demo){ $('orderBody').innerHTML = `<p><b>Demo order ${id}</b> — everything was checked as for a real order, but nothing was sent to the kitchen.</p>
+    <div class="o-btns"><button class="btn-ghost" id="oAmend">Amend this order</button><button class="btn-main" id="oFinish">Done</button></div>`; return; }
+  $('orderBody').innerHTML = `<p>Thank you, your order <b>${id}</b> has reached the kitchen. If anything is wrong, ${ph ? `call us on <a href="tel:${esc(ph.replace(/\s+/g, ''))}">${esc(ph)}</a>` : 'please contact the reception'}.</p>${unconfirmed ? '<p class="hint">The confirmation reply was slow to reach your phone. If you do not hear from us shortly, please call to check.</p>' : ''}
+    <div class="o-btns"><button class="btn-ghost" id="oAmend">Amend this order</button><button class="btn-main" id="oFinish">Done</button></div>`;
+}
+function showFallback(o, why){
+  const t = orderText(o), s = (menuData().settings || {}).orders || {}, p = menuData().profile || {}, q = encodeURIComponent(t);
+  const em = s.email || CONFIG.GUEST_ORDER_EMAIL, wa = (s.whatsapp || p.phone || '').replace(/\D/g, ''), ph = (p.phone || '').replace(/\s+/g, ''); OS.text = t;
+  $('orderTitle').textContent = 'Couldn’t send automatically';
+  $('orderBody').innerHTML = `<p>We could not confirm that your order was received. It may already have reached the kitchen, so please check with our staff before sending it again. To send it another way, the message is already written for you.</p><p class="rv-m" style="opacity:.6;font-size:.72rem">Reason: ${esc(why || 'unknown')}</p><div class="fb">
+    ${wa ? `<a class="btn-main" href="https://wa.me/${wa}?text=${q}">WhatsApp</a>` : ''}${em ? `<a class="btn-secondary" href="mailto:${esc(em)}?subject=${encodeURIComponent('Food order ' + o.id)}&body=${q}">Email</a>` : ''}
+    ${ph ? `<a class="btn-ghost" href="sms:${ph}?&body=${q}">SMS</a><a class="btn-ghost" href="tel:${ph}">Call</a>` : ''}<button class="btn-ghost" id="oCopy">Copy text</button></div>
+    <pre class="fb-t">${esc(t)}</pre><div class="o-btns"><button class="btn-ghost" id="oBack">Back</button><button class="btn-main" id="oFinish">I’ve sent it</button></div>`;
+}
+function finish(){ OS.done = false; clearSavedCart(); OS.cart.clear(); OS.amend = null; OS.id = null; OS.f.date = OS.f.time = OS.f.meal = OS.f.note = ''; bar(); closeO(); }
+$('orderBody').addEventListener('click', e => {
+  const t = e.target, row = t.closest('.ol');
+  if (t.classList.contains('q') && row){
+    grab(); const l = OS.cart.get(row.dataset.k), d = Number(t.dataset.d);
+    if (t.dataset.rm || l.q + d < 1) OS.cart.delete(row.dataset.k); else l.q = Math.min(50, l.q + d);
+    bar(); showForm(); return;
+  }
+  ({ oClose:closeO, oCancel:() => { if (confirm('Cancel this order and clear all your selections?')) finish(); }, oReview:() => { grab(); const m = check(); m ? showForm(m) : showReview(); }, oEdit:() => showForm(), oSend:send,
+     oBack:showReview, oFinish:finish, oAmend:() => { OS.amend = OS.lastId; OS.done = false; showForm(); saveCart(); },
+     oCopy:() => { navigator.clipboard?.writeText(OS.text).then(() => t.textContent = 'Copied ✓').catch(() => {}); } })[t.id]?.();
+});
+$('orderBody').addEventListener('change', e => {
+  const t = e.target, row = t.closest('.ol');
+  if (t.id === 'fBB'){ grab(); showForm(); return; }
+  if (t.id === 'fMeal' || t.id === 'fRoom'){ grab(); showForm(); return; }
+  if (t.matches('input[type=date],input[type=time]')){ const n = t.parentElement.querySelector('.fmt'); if (n) n.textContent = fmtOf(t.type, t.value); }
+  if (!row) return; const l = OS.cart.get(row.dataset.k); if (!l) return;
+  if (t.classList.contains('od')) l.d = t.value;
+  if (t.classList.contains('ot')) l.t = t.value;
+  if (t.classList.contains('om')){ grab(); l.m = t.value; showForm(); }
+});
+
+/* Date pickers: a phone can scroll to dates the PC calendar greys out. Snap any out-of-range pick to the nearest allowed date (same result as the PC). */
+$('orderModal').addEventListener('change', e => {
+  const t = e.target; if (!t || t.type !== 'date' || !t.value) return;
+  const beyond = t.max && t.value > t.max, before = t.min && t.value < t.min; if (!beyond && !before) return;
+  t.value = '';                                     // do not adjust the date: leave it blank for the guest to choose again
+  olToast(beyond ? 'Oops! That date is beyond your stay. Please select a date within your stay (Check-out: ' + fmtDate(t.max) + ').' : 'Oops! That date is not available. The earliest date you can choose is ' + fmtDate(t.min) + '.', 7000);
+}, true);
+
+/* Photo thumbnail at the bottom-right of each order line; tap it to enlarge (v3.0.6). */
+(function(){
+  const st = document.createElement('style');
+  st.textContent = `.ol .ol-top{display:flex;flex-direction:row;align-items:flex-start;gap:10px}.ol-name{flex:1;min-width:0;display:flex;flex-direction:column;gap:2px}
+  .ol-th{flex:none;width:48px;height:48px;margin:0;padding:0;border:1px solid var(--line,#e7e0d2);border-radius:8px;overflow:hidden;background:var(--paper,#fff);cursor:zoom-in;display:flex;align-items:center;justify-content:center;font-size:1.3rem}
+  .ol-th img{width:100%;height:100%;object-fit:cover;display:block}.ol-th.none{cursor:default;opacity:.55}
+  #olBox{position:fixed;inset:0;z-index:100001;background:rgba(0,0,0,.88);display:flex;flex-direction:column;align-items:center;justify-content:center;gap:12px;padding:16px;cursor:zoom-out}
+  #olBox img{max-width:96vw;max-height:78vh;border-radius:12px;object-fit:contain;background:#222}#olBox .cap{color:#fff;font:600 1.05rem 'Manrope',sans-serif;text-align:center}#olBox .hint{color:#ddd;font:600 1rem 'Manrope',sans-serif}`;
+  document.head.appendChild(st);
+})();
+function olThumb(c){
+  const d = dishBy(c) || {};
+  return d.imageFileId ? `<button type="button" class="ol-th" data-ol-img="${esc(d.imageFileId)}" data-ol-c="${esc(String(c))}" aria-label="Enlarge photo of ${esc(d.name || 'item')}"><img src="${driveImageUrl(d.imageFileId, 160)}" alt="" loading="lazy"></button>` : `<span class="ol-th none" aria-hidden="true">🍽️</span>`;
+}
+function olShow(fileId, code, name){                                     // full-screen photo (used by the order page and the menu page)
+  if (document.getElementById('olBox')) return;
+  const box = document.createElement('div'); box.id = 'olBox';
+  box.innerHTML = `<button type="button" class="x" aria-label="Close">✕ Close</button><img src="${driveImageUrl(fileId, 1200)}" alt="${esc(name || '')}"><div class="cap">${code ? '#' + String(code).padStart(3, '0') + ' ' : ''}${esc(name || '')}</div><div class="hint">Tap anywhere to close</div>`;
+  const close = () => { box.remove(); document.removeEventListener('keydown', onKey); };
+  const onKey = k => { if (k.key === 'Escape') close(); };
+  box.onclick = close; document.addEventListener('keydown', onKey); document.body.appendChild(box);
+}
+$('orderModal').addEventListener('click', e => {
+  const b = e.target.closest && e.target.closest('[data-ol-img]'); if (!b) return;
+  const d = dishBy(Number(b.dataset.olC)) || dishBy(b.dataset.olC) || {};
+  olShow(b.dataset.olImg, d.code, d.name);
+});
+document.addEventListener('click', e => {                                 // v3.0.17: tap a dish photo on the menu to enlarge it
+  const p = e.target.closest && e.target.closest('[data-enl]'); if (p) olShow(p.dataset.enl, p.dataset.enlC, p.dataset.enlN);
+});
+(function(){ const st = document.createElement('style');
+  st.textContent = `.photo-wrap[data-enl]{cursor:zoom-in}.photo-wrap[data-enl]::after{content:'🔍 Tap to enlarge';position:absolute;bottom:6px;right:6px;font:700 .72rem 'Manrope',sans-serif;padding:4px 9px;border-radius:999px;background:rgba(0,0,0,.6);color:#fff;pointer-events:none}
+  #olBox .x{position:absolute;top:max(14px,env(safe-area-inset-top));right:14px;background:#fff;color:#111;border:0;border-radius:999px;padding:10px 18px;font:800 1rem 'Manrope',sans-serif;cursor:pointer}`;
+  document.head.appendChild(st); })();
+
+/* v3.0.7 — stop Chrome's pull-to-refresh from reloading the page, and keep the cart on the phone so a reload never loses it. */
+(function(){ const s = document.createElement('style'); s.textContent = 'html,body{overscroll-behavior-y:contain}#orderModal,.o-modal{overscroll-behavior:contain}'; document.head.appendChild(s); })();
+const cartKey = () => 'gl-cart:' + (GUEST ? ((glSaved() || {}).code || 'guest') : 'open');
+function clearSavedCart(){ try{ localStorage.removeItem(cartKey()); }catch(e){} }
+function saveCart(){
+  if (!OS.restored || OS.done) return;                                     // not before the restore has run; not while a sent order is shown
+  try{
+    if (!OS.cart.size){ localStorage.removeItem(cartKey()); return; }
+    localStorage.setItem(cartKey(), JSON.stringify({ t:Date.now(), cart:[...OS.cart.entries()], f:{ date:OS.f.date || '', meal:OS.f.meal || '', time:OS.f.time || '', note:OS.f.note || '' } }));
+  }catch(e){}
+}
+function restoreCart(){
+  try{
+    const s = JSON.parse(localStorage.getItem(cartKey()) || 'null');
+    if (!s || !Array.isArray(s.cart) || Date.now() - s.t > 12 * 3600 * 1000){ if (s) clearSavedCart(); OS.restored = true; return; }
+    const mn = minDate(), mx = maxDate(); let n = 0;
+    s.cart.forEach(([k, l]) => {
+      const d = dishBy(l.c); if (!d || d.active === false) return;                                  // dish no longer on the menu
+      if (l.s ? !(d.subOptions || []).some(x => x.name === l.s) : (d.subOptions || []).length) return;   // option changed
+      const cat = catOf(l.c); if (GUEST && cat){ const v = glCatView(cat); if (v.hide || v.msg) return; }
+      if (l.d && (l.d < mn || (mx && l.d > mx))) l.d = '';                                          // date no longer allowed
+      l.q = Math.max(1, Math.min(50, Number(l.q) || 1)); OS.cart.set(k, l); n++;
+    });
+    const f = s.f || {}; Object.assign(OS.f, { date:(f.date && f.date >= mn && (!mx || f.date <= mx)) ? f.date : '', meal:f.meal || '', time:f.time || '', note:f.note || '' });
+    if (n){
+      olToast('Your previous selections were restored.');
+    }
+  }catch(e){}
+  OS.restored = true;
+}
+['change', 'input'].forEach(ev => $('orderBody').addEventListener(ev, () => { try{ if ($('fName')) grab(); }catch(e){} saveCart(); }));   // keep dates, meals and note saved as they are edited
+
+/* Notice that stands out in both light and dark mode (v3.0.8). */
+let olToastT;
+function olToast(msg, ms){
+  let b = document.getElementById('olToast');
+  if (!b){ b = document.createElement('div'); b.id = 'olToast'; b.style.cssText = 'position:fixed;left:50%;bottom:90px;transform:translateX(-50%);width:max-content;max-width:90%;background:#ffd54f;color:#1a1a1a;border:2px solid #f9a825;box-shadow:0 6px 24px rgba(0,0,0,.55);padding:12px 16px;border-radius:12px;font:700 .95rem Manrope,sans-serif;z-index:100000;text-align:center'; document.body.appendChild(b); }
+  b.textContent = msg; b.style.display = 'block'; clearTimeout(olToastT); olToastT = setTimeout(() => { b.style.display = 'none'; }, ms || 4500);
+}
+
+/* Same-day rule: once today's Breakfast / Lunch / Dinner time has passed, that meal can no longer be ordered for today (v3.0.9). */
+function slotPassedToday(c){ const m = fixedMeal(c); return !!m && nowHM() >= mealTime(m); }
+function minDateFor(c){
+  const b = minDate(); if (b !== today() || !slotPassedToday(c)) return b;
+  const t = tomorrow(); return GUEST && GUEST.checkin > t ? GUEST.checkin : t;
+}
+function minDateAll(){ return lines().reduce((m, l) => { const x = minDateFor(l.c); return x > m ? x : m; }, minDate()); }
