@@ -1,6 +1,6 @@
 /* ==========================================================================
    Gaia Lake Bungalow — Digital Menu System
-   R1 PREVIEW-REPOSITORY copy of the configuration (GaiaLakeMenuR1) — never copy the dev config.js over this file, and never copy this one into GaiaLakeMenu-dev.
+   LIVE-REPOSITORY copy of the configuration (GaiaLakeMenuR1) — never copy the dev config.js over this file, and never copy this one into GaiaLakeMenu-dev.
    Shared configuration — loaded by BOTH admin.html and the public guest menu
    page (index.html on GitHub Pages, so it serves at your repo's root URL).
    ==========================================================================
@@ -58,17 +58,17 @@ const CONFIG = {
   // Email guests see and use in the fallback "Email" button (Admin → Settings → For orders overrides it if filled in).
   GUEST_ORDER_EMAIL: "priyagaialake@gmail.com",
 
-  // R1 preview copy: shows a badge on every page and asks search engines not to list it. The final live config.js keeps this empty ("").
-  ENV_LABEL: "R1 preview",
+  // Live copy: no badge. (The dev copy shows a DEV badge here.)
+  ENV_LABEL: "",
 
   // Guest login (v3.0): the private guestlogin.json file ID (from the Apps Script log after setupGuestLoginTest). Guest login is switched on/off in Admin → Guest Codes.
   GUESTLOGIN_FILE_ID: "1Eb-KryAEqPPfbkpRA3HpDqj_o77VX78R",
-  GUEST_LOGIN_FORCE: true,    // R1 preview: the guest login is always required, whatever the Admin switch says
+  GUEST_LOGIN_FORCE: false,   // leave false; the Admin → Guest Codes switch controls login (page and kitchen server together)
 
   RESTAURANT_NAME_FALLBACK: "Gaia Lake - Kandalama",
 
   // --- App version & What's New (Claude updates these two lines on every release —
   // admin no longer needs to type a version number anywhere) -----------------
-  APP_VERSION: "3.0.17",
-  WHATS_NEW_LATEST: "Tap a dish photo on the menu to see it full screen."
+  APP_VERSION: "3.0.18",
+  WHATS_NEW_LATEST: "R1 is live: the preview label is gone and guest login is controlled by the Admin switch."
 };

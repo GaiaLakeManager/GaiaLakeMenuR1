@@ -1,5 +1,8 @@
 # Gaia Lake Menu — What's New
 
+## v3.0.18 — 14 Oct 2026
+- **R1 live.** The "R1 preview" label and the search-engine block are removed, so the menu now looks and behaves as the live site. Guest login is controlled only by **Admin → Guest Codes → Require guest login** (keep it **On**); the old fixed login line in `config.js` is switched off so the page and the kitchen server always agree. Only `config.js` changes.
+
 ## v3.0.17 — 14 Oct 2026
 - **Tap a dish photo to enlarge it on the menu page.** Any dish photo opens full screen with the dish number and name, the same view as on the order page. A small "🔍 Tap to enlarge" label on each photo shows it can be tapped. Close it by tapping anywhere, pressing the new **✕ Close** button, or pressing Esc. The close button and the "Tap anywhere to close" text are larger for easier use (`orders.js`, `index.html`).
 
