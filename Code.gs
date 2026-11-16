@@ -7,6 +7,7 @@ function doGet(){ return out({ ok:true, service:'gaia-lake-orders' }); }
 function doPost(e){
   try{
     const P = PropertiesService.getScriptProperties(), o = JSON.parse(e.postData.contents);
+    if (o.action === 'myorders') return myOrders(o, P);                    // v3.1.0 guest order history
     if (o.action === 'login' || o.action === 'check') return guestLogin(o, P);   // v3.0 guest login (separate from ordering)
     if (o.website) return out({ ok:true, id:o.id });                       // hidden trap field filled = bot; pretend success
     if (!/^GL-[A-Z0-9]{6,10}$/.test(o.id || '')) return reject('Invalid order reference.');
@@ -42,12 +43,13 @@ function doPost(e){
     const dt = /^\d{4}-\d{2}-\d{2}$/, tm = /^\d{2}:\d{2}$/;
     const bbCats = new Set((menu.categories || []).filter(c => c.bbIncluded).map(c => c.id));
     const isGroup = G ? !!G.group : (S.groupLabels || []).some(g => String(g).trim().toLowerCase() === room.toLowerCase()), sitting = {}, MNAME = { B:'Breakfast', L:'Lunch', D:'Dinner' };   // group orders: one item per Breakfast/Lunch/Dinner sitting
+    const hiddenCat = {}; (menu.categories || []).forEach(k => { if (k.active === false) hiddenCat[k.id] = 1; });   // v3.1.0: a hidden category's items cannot be ordered
     const catMeal = {}; (menu.categories || []).forEach(c => { const m = (c.meal !== undefined ? c.meal : (c.bfOnly !== undefined ? (c.bfOnly ? 'B' : '') : (c.bbIncluded ? 'B' : ''))); if (m) catMeal[c.id] = m; });   // category -> fixed meal (B/L/D)
     const planIncluded = G ? (GL_PLAN[G.basis] || []).length > 0 : !!o.planIncluded;   // Room Only: nothing included
     let total = 0, bbValue = 0;                                            // all amounts are USD
     const items = [];
     for (const it of o.items){                                             // prices always come from the live menu, never from the guest's device
-      const d = (menu.dishes || []).find(x => x.active !== false && Number(x.code) === Number(it.c));
+      const d = (menu.dishes || []).find(x => x.active !== false && !hiddenCat[x.categoryId] && Number(x.code) === Number(it.c));
       if (!d) return reject('An item is no longer on the menu (#' + it.c + ').');
       const sub = it.s ? (d.subOptions || []).find(x => x.name === it.s) : null;
       if ((d.subOptions || []).length && !sub) return reject('Please choose an option for ' + d.name + '.');
@@ -90,6 +92,7 @@ function doPost(e){
       priceAdjusted:Math.round(Number(o.total) * 100) !== Math.round(total * 100), via:'web', receivedOutsideHours:outsideHours };
     if (G && G.demo) return out({ ok:true, id:o.id, demo:true });             // demo guest (for showing management): fully checked like a real order, but nothing is saved, locked or sent
     folder.createFile(o.id + '.json', JSON.stringify(rec), 'application/json');
+    if (G && !G.demo){ try{ glLinkOrder(P, G, o.id); }catch(e){ Logger.log('Order link failed: ' + e); } }   // v3.1.0: remember this order on the guest record; a link problem never blocks an order
     if (G && G.group && !G.device){ try{ glLockDevice(P, G, glDid(o)); }catch(e){ Logger.log('Device lock failed: ' + e); } }   // the order is already saved; a lock problem never blocks it
     }finally{ lock.releaseLock(); }                                        // released before the slow email/Telegram calls
     notify(rec, P);
@@ -184,4 +187,85 @@ function setupGuestLoginTest(){
   const f = folder.createFile('guestlogin.json', JSON.stringify({ guests:[rec] }), 'application/json');
   P.setProperty('GUESTLOGIN_FILE_ID', f.getId());
   Logger.log('File ID ' + f.getId() + ' | Test login: Test Guest / +94771234567 / ' + code);
+}
+
+/* ===================== v3.1.0 — guest order history + overdue reminder ===================== */
+const OD_END = { B:'09:00', L:'14:30', D:'22:00' }, OD_MN = { B:'Breakfast', L:'Lunch', D:'Dinner' };   // default "meal ends" times (Admin → Settings can change them)
+function glLinkOrder(P, g, orderId){                                       // add the order id to the guest record (read again just before writing so admin edits are kept)
+  const f = DriveApp.getFileById(P.getProperty('GUESTLOGIN_FILE_ID')), data = JSON.parse(f.getBlob().getDataAsString());
+  const r = (data.guests || []).find(x => (g.id && x.id === g.id) || (!g.id && String(x.code).toUpperCase() === String(g.code).toUpperCase()));
+  if (!r) return;
+  r.orders = (r.orders || []).filter(x => x !== orderId); r.orders.push(orderId); r.orders = r.orders.slice(-60);
+  f.setContent(JSON.stringify(data));
+}
+function ordSittings(r){                                                   // one sitting = date + meal (B/L/D), or date + requested time (T)
+  const m = {}; (r.items || []).forEach(i => { if (!i.date) return; const k = i.meal === 'T' ? i.date + '|T|' + i.time : i.date + '|' + i.meal; (m[k] = m[k] || { k:k, date:i.date, meal:i.meal, time:i.time, items:[] }).items.push(i); });
+  return Object.keys(m).map(k => m[k]);
+}
+const ordDone = (r, s) => !!(r.served && r.served[s.k]) || ['Served', 'Billed', 'Paid'].indexOf(r.status) >= 0;
+function ordEnd(S, s){                                                     // time after which a Pending sitting is overdue
+  if (s.meal === 'T'){ const p = String(s.time).split(':').map(Number), t = Math.min(p[0] * 60 + p[1] + (isNaN(parseInt(S.timedGrace, 10)) ? 60 : parseInt(S.timedGrace, 10)), 1439); return ('0' + Math.floor(t / 60)).slice(-2) + ':' + ('0' + t % 60).slice(-2); }
+  return S[{ B:'breakfastEnd', L:'lunchEnd', D:'dinnerEnd' }[s.meal]] || OD_END[s.meal];
+}
+function myOrders(o, P){                                                   // re-verifies name + phone + code, then returns only this guest's own orders (guest-visible fields only)
+  const code = String(o.code || '').toUpperCase().replace(/[^A-Z0-9]/g, ''), nm = glName(o.name), ph = glPhone(o.phone);
+  let rec;
+  const lock = LockService.getScriptLock(); lock.waitLock(10000);
+  try{
+    const cache = CacheService.getScriptCache();
+    if (cache.get('glp') || P.getProperty('gld_' + code)) return out({ ok:false, error:GL_CONTACT });
+    const found = glFind(P, code, nm, ph);
+    if (!found) return out({ ok:false, error:'Guest login is not set up yet.' });
+    if (!found.match){                                                     // wrong details count toward the same global pause as login
+      const gn = Number(cache.get('glg') || 0) + 1; cache.put('glg', String(gn), 600);
+      if (gn >= GL_GLOBAL_MAX){ cache.put('glp', '1', 600); cache.remove('glg'); }
+      return out({ ok:false, reason:'invalid', error:GL_BAD });
+    }
+    const s = glState(found.rec); if (s !== 'ok') return out({ ok:false, reason:s, error:'This code is no longer active.' });
+    rec = found.rec;
+  }finally{ lock.releaseLock(); }
+  if (rec.demo) return out({ ok:true, orders:[] });
+  const folder = DriveApp.getFolderById(P.getProperty('ORDERS_FOLDER_ID')), recs = [];
+  (rec.orders || []).slice(-30).forEach(id => { try{ const it = folder.getFilesByName(id + '.json'); if (it.hasNext()) recs.push(JSON.parse(it.next().getBlob().getDataAsString())); }catch(e){} });
+  const replaced = {}; recs.forEach(r => { if (r.amend) replaced[r.amend] = 1; });   // an amended order is shown only as its latest version
+  const orders = recs.filter(r => !replaced[r.id]).map(r => ({ id:r.id, received:r.received, note:r.note || '', total:Number(r.total) || 0, paid:r.status === 'Paid',
+    sittings:ordSittings(r).map(s => ({ date:s.date, meal:s.meal, time:s.time, done:ordDone(r, s),
+      items:s.items.map(i => ({ code:i.code, name:i.name, sub:i.sub || '', qty:i.qty, unit:i.unit, bbWaived:!!i.bbWaived })) })) }));
+  return out({ ok:true, orders:orders });
+}
+function tgSend(P, text){ try{ UrlFetchApp.fetch('https://api.telegram.org/bot' + P.getProperty('TELEGRAM_TOKEN') + '/sendMessage', { method:'post', payload:{ chat_id:P.getProperty('TELEGRAM_CHAT'), text:text }, muteHttpExceptions:true }); }catch(e){} }
+/* Runs every 15 minutes (trigger made by setupOverdueTrigger). One Telegram message per sitting that is past its end time and still Pending. Each sitting is reported once. */
+function checkOverdue(){
+  const P = PropertiesService.getScriptProperties(), S = (JSON.parse(DriveApp.getFileById(P.getProperty('MENU_FILE_ID')).getBlob().getDataAsString()).settings) || {};
+  const now = new Date(), today = Utilities.formatDate(now, 'Asia/Colombo', 'yyyy-MM-dd'), nowT = Utilities.formatDate(now, 'Asia/Colombo', 'HH:mm');
+  const oldest = Utilities.formatDate(new Date(now.getTime() - 4 * 864e5), 'Asia/Colombo', 'yyyy-MM-dd');
+  const since = Utilities.formatDate(new Date(now.getTime() - 45 * 864e5), 'UTC', "yyyy-MM-dd'T'00:00:00");
+  const sent = JSON.parse(P.getProperty('OD_SENT') || '[]'), groups = {};
+  const ofolder = DriveApp.getFolderById(P.getProperty('ORDERS_FOLDER_ID')); let files;
+  try{ files = ofolder.searchFiles("modifiedDate > '" + since + "'"); files.hasNext(); }catch(e){ Logger.log('Date search failed (' + e + ') — reading every order instead'); files = ofolder.getFiles(); }
+  let scanned = 0, pend = 0, already = 0;
+  while (files.hasNext()){
+    let r; try{ r = JSON.parse(files.next().getBlob().getDataAsString()); }catch(e){ continue; }
+    scanned++; if (!r || !r.id || r.archived || (r.status || 'Pending') !== 'Pending') continue; pend++;
+    Logger.log('  Pending ' + r.id + ': ' + (ordSittings(r).map(s => s.k + (ordDone(r, s) ? ' (served)' : '') + ' ends ' + ordEnd(S, s)).join('; ') || 'NO dated meals — nothing to remind'));
+    ordSittings(r).forEach(s => {
+      if (ordDone(r, s) || s.date < oldest) return;
+      const end = ordEnd(S, s), late = s.date < today || (s.date === today && nowT >= end), key = r.id + '|' + s.k;
+      if (!late) return; if (sent.indexOf(key) >= 0){ already++; return; }
+      const gk = s.meal === 'T' ? s.date + '|T|' + s.time : s.date + '|' + s.meal;
+      (groups[gk] = groups[gk] || { s:s, end:end, list:[] }).list.push({ key:key, line:r.id + ' · ' + r.room + ' · ' + r.name });
+    });
+  }
+  Object.keys(groups).forEach(gk => {
+    const g = groups[gk], label = g.s.meal === 'T' ? 'Order for ' + g.s.time : OD_MN[g.s.meal];
+    tgSend(P, '⏰ ' + label + ' (' + g.s.date + ') ended ' + g.end + ' — ' + g.list.length + ' still Pending:\n' + g.list.map(x => x.line).join('\n') + '\nPlease mark each meal Served in Admin → Orders.');
+    g.list.forEach(x => sent.push(x.key));
+  });
+  P.setProperty('OD_SENT', JSON.stringify(sent.slice(-500)));
+  Logger.log('Overdue check ' + today + ' ' + nowT + ': ' + scanned + ' orders read, ' + pend + ' Pending, ' + Object.keys(groups).length + ' reminder message(s) sent, ' + already + ' already reported earlier.');
+}
+function setupOverdueTrigger(){                                            // ONE-TIME: run once from the Apps Script editor and approve the permission
+  ScriptApp.getProjectTriggers().forEach(t => { if (t.getHandlerFunction() === 'checkOverdue') ScriptApp.deleteTrigger(t); });
+  ScriptApp.newTrigger('checkOverdue').timeBased().everyMinutes(15).create();
+  Logger.log('Overdue reminder is on: checks every 15 minutes.');
 }
