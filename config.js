@@ -1,6 +1,6 @@
 /* ==========================================================================
    Gaia Lake Bungalow — Digital Menu System
-   DEV-REPOSITORY copy of the configuration — never copy this file into the live repository.
+   LIVE-REPOSITORY copy of the configuration (GaiaLakeMenuR1) — never copy the dev config.js over this file, and never copy this one into GaiaLakeMenu-dev.
    Shared configuration — loaded by BOTH admin.html and the public guest menu
    page (index.html on GitHub Pages, so it serves at your repo's root URL).
    ==========================================================================
@@ -50,7 +50,7 @@ const CONFIG = {
 
   // Public URL of the guest menu once hosted (used to generate the QR code).
   // If it's named index.html, the /index.html suffix is optional.
-  GUEST_MENU_URL: "https://gaialakemanager.github.io/GaiaLakeMenu-dev/index.html", 	 	
+  GUEST_MENU_URL: "https://gaialakemanager.github.io/GaiaLakeMenuR1/index.html", 	
 
   // Guest ordering (v2.0): the Apps Script web-app URL (…/exec) and the private Orders folder ID (owned by the orders account).
   ORDER_SCRIPT_URL: "https://script.google.com/macros/s/AKfycbzB0zcOSoT76o5p9E7uDNzfserKz_yYci9d7-nVZHqlrL924Yxb01_K1a0a9lx7IVGjhg/exec",
@@ -58,12 +58,12 @@ const CONFIG = {
   // Email guests see and use in the fallback "Email" button (Admin → Settings → For orders overrides it if filled in).
   GUEST_ORDER_EMAIL: "priyagaialake@gmail.com",
 
-  // DEV copy: shows a red DEV badge on every page. The live config.js keeps this empty ("").
-  ENV_LABEL: "DEV",
+  // Live copy: no badge. (The dev copy shows a DEV badge here.)
+  ENV_LABEL: "",
 
   // Guest login (v3.0): the private guestlogin.json file ID (from the Apps Script log after setupGuestLoginTest). Guest login is switched on/off in Admin → Guest Codes.
   GUESTLOGIN_FILE_ID: "1Eb-KryAEqPPfbkpRA3HpDqj_o77VX78R",
-  GUEST_LOGIN_FORCE: false,   // leave false; the Admin switch controls login
+  GUEST_LOGIN_FORCE: false,   // leave false; the Admin → Guest Codes switch controls login (page and kitchen server together)
 
   RESTAURANT_NAME_FALLBACK: "Gaia Lake - Kandalama",
 
